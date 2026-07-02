@@ -15,6 +15,14 @@ using either [Kind](https://kind.sigs.k8s.io/) or
 :::warning
     The instructions contained in this section are for demonstration,
     testing, and practice purposes only and must not be used in production.
+
+    By default, CloudNativePG uses asynchronous replication, which means
+    committed transactions may not yet be on any standby at the time of
+    failover — resulting in data loss. For production clusters, configure
+    [synchronous replication](replication.md#synchronous-replication) and
+    consider enabling
+    [failover quorum](failover.md#failover-quorum-quorum-based-failover)
+    to ensure durability guarantees are maintained during failover.
 :::
 
 Like any other Kubernetes application, CloudNativePG is deployed using

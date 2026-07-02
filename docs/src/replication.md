@@ -131,10 +131,14 @@ CloudNativePG supports both
     section.
 :::
 
-:::info[Important]
-    The [*failover quorum* feature](failover.md#failover-quorum-quorum-based-failover)
-    can be used alongside synchronous replication to improve data durability
-    and safety during failover events.
+:::warning
+    Synchronous replication alone does not guarantee zero data loss during
+    failover. Without
+    [failover quorum](failover.md#failover-quorum-quorum-based-failover),
+    a replica that has not received all synchronously committed transactions
+    can still be promoted. Enable `failoverQuorum: true` in the `synchronous`
+    stanza to ensure only replicas that participated in the quorum are
+    eligible for promotion.
 :::
 
 Direct configuration of the `synchronous_standby_names` option is not
