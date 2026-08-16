@@ -192,6 +192,39 @@ type Data struct {
 	// be disabled when the webhook configurations are managed externally (e.g.
 	// by cert-manager's CA injector or by GitOps).
 	ManageWebhookConfigurations bool `json:"manageWebhookConfigurations" env:"MANAGE_WEBHOOK_CONFIGURATIONS"`
+
+	// LogOTelEndpoint is the OTLP gRPC endpoint of an OpenTelemetry collector
+	// receiving the logs of the operator, of the instance managers and of
+	// PostgreSQL, in addition to the standard output. TLS is used unless the
+	// endpoint scheme is http. When empty, no log record is exported.
+	LogOTelEndpoint string `json:"logOtelEndpoint" env:"LOG_OTEL_ENDPOINT"`
+
+	// LogOTelCAFile is the path of the PEM CA bundle verifying the certificate
+	// of the OpenTelemetry collector, defaulting to the system pool
+	LogOTelCAFile string `json:"logOtelCAFile" env:"LOG_OTEL_CA_FILE"`
+
+	// LogOTelCertFile is the path of the PEM client certificate presented to
+	// the OpenTelemetry collector for mutual TLS
+	LogOTelCertFile string `json:"logOtelCertFile" env:"LOG_OTEL_CERT_FILE"`
+
+	// LogOTelKeyFile is the path of the PEM client private key presented to
+	// the OpenTelemetry collector for mutual TLS
+	LogOTelKeyFile string `json:"logOtelKeyFile" env:"LOG_OTEL_KEY_FILE"`
+
+	// LogOTelTLSSecret is the name of a TLS Secret holding the material the
+	// instance managers and PostgreSQL use to reach the OpenTelemetry
+	// collector: the "ca.crt", "tls.crt" and "tls.key" entries produced by
+	// cert-manager, or by any other issuer following the same convention.
+	//
+	// The name is resolved in the namespace of each Cluster, because a Secret
+	// cannot be mounted across namespaces, and the Secret is optional: a
+	// namespace missing it keeps running without exporting, instead of holding
+	// the instances unschedulable.
+	//
+	// It supersedes LogOTelCAFile, LogOTelCertFile and LogOTelKeyFile for the
+	// instance pods, which are otherwise propagated as they are and left for
+	// the operator to mount by hand.
+	LogOTelTLSSecret string `json:"logOtelTLSSecret" env:"LOG_OTEL_TLS_SECRET"`
 }
 
 // Current is the configuration used by the operator

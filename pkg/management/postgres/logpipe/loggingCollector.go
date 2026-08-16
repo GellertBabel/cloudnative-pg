@@ -21,6 +21,8 @@ package logpipe
 
 import (
 	"fmt"
+
+	"go.uber.org/zap/zapcore"
 )
 
 // FieldsPerRecord12 is the number of fields in a CSV log line
@@ -126,4 +128,49 @@ func (r *LoggingRecord) FromCSV(content []string) NamedRecord {
 // GetName implements the NamedRecord interface
 func (r *LoggingRecord) GetName() string {
 	return LoggingCollectorRecordName
+}
+
+// MarshalLogObject implements zapcore.ObjectMarshaler, writing one log field
+// per PostgreSQL field instead of letting the logger reflect over the record.
+//
+// The names and the omitempty behavior are the ones of the JSON tags above, so
+// the JSON output is unchanged, and every backend reading the log stream as
+// structured data — including an OpenTelemetry collector — receives the fields
+// individually rather than as one opaque value.
+func (r *LoggingRecord) MarshalLogObject(enc zapcore.ObjectEncoder) error {
+	addString(enc, "log_time", r.LogTime)
+	addString(enc, "user_name", r.Username)
+	addString(enc, "database_name", r.DatabaseName)
+	addString(enc, "process_id", r.ProcessID)
+	addString(enc, "connection_from", r.ConnectionFrom)
+	addString(enc, "session_id", r.SessionID)
+	addString(enc, "session_line_num", r.SessionLineNum)
+	addString(enc, "command_tag", r.CommandTag)
+	addString(enc, "session_start_time", r.SessionStartTime)
+	addString(enc, "virtual_transaction_id", r.VirtualTransactionID)
+	addString(enc, "transaction_id", r.TransactionID)
+	addString(enc, "error_severity", r.ErrorSeverity)
+	addString(enc, "sql_state_code", r.SQLStateCode)
+	addString(enc, "message", r.Message)
+	addString(enc, "detail", r.Detail)
+	addString(enc, "hint", r.Hint)
+	addString(enc, "internal_query", r.InternalQuery)
+	addString(enc, "internal_query_pos", r.InternalQueryPos)
+	addString(enc, "context", r.Context)
+	addString(enc, "query", r.Query)
+	addString(enc, "query_pos", r.QueryPos)
+	addString(enc, "location", r.Location)
+	addString(enc, "application_name", r.ApplicationName)
+	addString(enc, "backend_type", r.BackendType)
+	addString(enc, "leader_pid", r.LeaderPid)
+	addString(enc, "query_id", r.QueryID)
+
+	return nil
+}
+
+// addString writes a field, omitting it when empty
+func addString(enc zapcore.ObjectEncoder, name, value string) {
+	if value != "" {
+		enc.AddString(name, value)
+	}
 }

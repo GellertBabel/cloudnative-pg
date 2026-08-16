@@ -42,6 +42,7 @@ import (
 	"github.com/cloudnative-pg/cloudnative-pg/internal/cnpi/plugin"
 	cnpgiClient "github.com/cloudnative-pg/cloudnative-pg/internal/cnpi/plugin/client"
 	"github.com/cloudnative-pg/cloudnative-pg/internal/configuration"
+	"github.com/cloudnative-pg/cloudnative-pg/internal/logging/otel"
 	"github.com/cloudnative-pg/cloudnative-pg/pkg/management/url"
 	"github.com/cloudnative-pg/cloudnative-pg/pkg/postgres"
 	"github.com/cloudnative-pg/cloudnative-pg/pkg/utils"
@@ -173,6 +174,34 @@ func CreatePodEnvConfig(cluster apiv1.Cluster, podName string) EnvConfig {
 				Value: strconv.Itoa(*configuration.Current.StandbyTCPUserTimeout),
 			},
 		)
+	}
+
+	// Let the instance managers export their logs, and the PostgreSQL ones, to
+	// the same collector the operator is using.
+	//
+	// Only the endpoint is a plain copy of the operator configuration: the
+	// paths of the TLS material are the ones of the Secret mounted in the
+	// instance pods, when one is configured, because the operator's own paths
+	// have no meaning inside them. Without a Secret the operator paths are
+	// propagated as they are, leaving the material to be mounted by hand.
+	otelVariables := []corev1.EnvVar{
+		{Name: otel.EndpointEnvName, Value: configuration.Current.LogOTelEndpoint},
+		{Name: otel.CAFileEnvName, Value: configuration.Current.LogOTelCAFile},
+		{Name: otel.CertFileEnvName, Value: configuration.Current.LogOTelCertFile},
+		{Name: otel.KeyFileEnvName, Value: configuration.Current.LogOTelKeyFile},
+	}
+	if OTelTLSSecretName(&cluster) != "" {
+		otelVariables = []corev1.EnvVar{
+			{Name: otel.EndpointEnvName, Value: configuration.Current.LogOTelEndpoint},
+			{Name: otel.CAFileEnvName, Value: postgres.OTelCACertificateLocation},
+			{Name: otel.CertFileEnvName, Value: postgres.OTelClientCertificateLocation},
+			{Name: otel.KeyFileEnvName, Value: postgres.OTelClientKeyLocation},
+		}
+	}
+	for _, variable := range otelVariables {
+		if variable.Value != "" {
+			config.EnvVars = append(config.EnvVars, variable)
+		}
 	}
 
 	hashValue, _ := hash.ComputeHash(config)
