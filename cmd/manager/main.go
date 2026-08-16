@@ -23,6 +23,8 @@ The manager command is the main entrypoint of CloudNativePG operator.
 package main
 
 import (
+	"context"
+	"fmt"
 	"os"
 
 	"github.com/cloudnative-pg/machinery/pkg/log"
@@ -38,6 +40,8 @@ import (
 	"github.com/cloudnative-pg/cloudnative-pg/internal/cmd/manager/walarchive"
 	"github.com/cloudnative-pg/cloudnative-pg/internal/cmd/manager/walrestore"
 	"github.com/cloudnative-pg/cloudnative-pg/internal/cmd/versions"
+	"github.com/cloudnative-pg/cloudnative-pg/internal/configuration"
+	"github.com/cloudnative-pg/cloudnative-pg/internal/logging/otel"
 
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 )
@@ -45,7 +49,15 @@ import (
 func main() {
 	cobra.EnableTraverseRunHooks = true
 
-	if err := newRootCmd().Execute(); err != nil {
+	err := newRootCmd().Execute()
+
+	// the log records buffered for the OpenTelemetry collector are flushed
+	// here, so that the ones describing a failure are not lost with it
+	if shutdownErr := otel.Shutdown(context.Background()); shutdownErr != nil {
+		fmt.Fprintf(os.Stderr, "while flushing the exported log records: %v\n", shutdownErr)
+	}
+
+	if err != nil {
 		os.Exit(1)
 	}
 }
@@ -86,11 +98,37 @@ func newRootCmd() *cobra.Command {
 // manager forwarding the PostgreSQL log, whose records share a single message
 // and would otherwise be collapsed by the sampler under a burst of activity.
 func loggingOptions(cmd *cobra.Command) []log.ConfigureOption {
-	if topLevelCommand(cmd).Name() == "controller" {
-		return nil
+	var options []log.ConfigureOption
+
+	if topLevelCommand(cmd).Name() != "controller" {
+		options = append(options, log.WithDisabledSampling())
 	}
 
-	return []log.ConfigureOption{log.WithDisabledSampling()}
+	if option, err := otel.NewZapOption(cmd.Context(), otelConfig()); err != nil {
+		// the export is an addition to the standard output, so a misconfigured
+		// collector degrades the observability instead of stopping the process
+		fmt.Fprintf(os.Stderr, "while setting up the log export, continuing without it: %v\n", err)
+	} else if option != nil {
+		options = append(options, log.WithZapOptions(option))
+	}
+
+	return options
+}
+
+// otelConfig returns the log export configuration of the process: the operator
+// reads it from the operator ConfigMap or Secret, every other subcommand runs
+// inside a Cluster's pod and reads the environment the operator set there.
+func otelConfig() otel.Config {
+	if configuration.Current.LogOTelEndpoint != "" {
+		return otel.Config{
+			Endpoint: configuration.Current.LogOTelEndpoint,
+			CAFile:   configuration.Current.LogOTelCAFile,
+			CertFile: configuration.Current.LogOTelCertFile,
+			KeyFile:  configuration.Current.LogOTelKeyFile,
+		}
+	}
+
+	return otel.ConfigFromEnv()
 }
 
 // topLevelCommand walks up the command tree until it finds the direct child

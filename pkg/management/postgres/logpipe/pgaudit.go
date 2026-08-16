@@ -19,6 +19,8 @@ SPDX-License-Identifier: Apache-2.0
 
 package logpipe
 
+import "go.uber.org/zap/zapcore"
+
 // PgAuditFieldsPerRecord is the number of fields in a pgaudit log line
 const PgAuditFieldsPerRecord int = 9
 
@@ -48,6 +50,22 @@ func NewPgAuditLoggingDecorator() *PgAuditLoggingDecorator {
 // GetName implements the NamedRecord interface
 func (r *PgAuditLoggingDecorator) GetName() string {
 	return PgAuditRecordName
+}
+
+// MarshalLogObject implements zapcore.ObjectMarshaler, writing the PostgreSQL
+// fields and, nested under "audit", the pgaudit ones
+func (r *PgAuditLoggingDecorator) MarshalLogObject(enc zapcore.ObjectEncoder) error {
+	if r.LoggingRecord != nil {
+		if err := r.LoggingRecord.MarshalLogObject(enc); err != nil {
+			return err
+		}
+	}
+
+	if r.Audit == nil {
+		return nil
+	}
+
+	return enc.AddObject("audit", r.Audit)
 }
 
 func getTagAndContent(record *LoggingRecord) (string, string) {
@@ -110,4 +128,20 @@ type PgAuditRecord struct {
 	Statement      string `json:"statement,omitempty"`
 	Parameter      string `json:"parameter,omitempty"`
 	Rows           string `json:"rows,omitempty"`
+}
+
+// MarshalLogObject implements zapcore.ObjectMarshaler
+func (r *PgAuditRecord) MarshalLogObject(enc zapcore.ObjectEncoder) error {
+	addString(enc, "audit_type", r.AuditType)
+	addString(enc, "statement_id", r.StatementID)
+	addString(enc, "substatement_id", r.SubstatementID)
+	addString(enc, "class", r.Class)
+	addString(enc, "command", r.Command)
+	addString(enc, "object_type", r.ObjectType)
+	addString(enc, "object_name", r.ObjectName)
+	addString(enc, "statement", r.Statement)
+	addString(enc, "parameter", r.Parameter)
+	addString(enc, "rows", r.Rows)
+
+	return nil
 }

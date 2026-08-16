@@ -30,6 +30,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	apiv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
+	"github.com/cloudnative-pg/cloudnative-pg/internal/configuration"
 	"github.com/cloudnative-pg/cloudnative-pg/pkg/postgres"
 )
 
@@ -52,6 +53,10 @@ const PgTablespaceVolumePath = "/var/lib/postgresql/tablespaces"
 
 // pgdataVolumeName is the name of the PGDATA volume
 const pgdataVolumeName = "pgdata"
+
+// otelCertificatesVolumeName is the name of the volume carrying the TLS
+// material used to reach the OpenTelemetry collector
+const otelCertificatesVolumeName = "otel-certificates"
 
 // MountForTablespace returns the normalized tablespace volume name for a given
 // tablespace, on a cluster pod
@@ -163,6 +168,10 @@ func createPostgresVolumes(
 
 	if cluster.ShouldCreateProjectedVolume() {
 		result = append(result, createProjectedVolume(cluster))
+	}
+
+	if secretName := OTelTLSSecretName(cluster); secretName != "" {
+		result = append(result, createOTelCertificatesVolume(secretName))
 	}
 
 	result = append(result, createKubeAPIAccessVolume())
@@ -300,6 +309,16 @@ func CreatePostgresVolumeMounts(cfg VolumeMountsConfig) []corev1.VolumeMount {
 		)
 	}
 
+	if OTelTLSSecretName(&cluster) != "" {
+		volumeMounts = append(volumeMounts,
+			corev1.VolumeMount{
+				Name:      otelCertificatesVolumeName,
+				MountPath: postgres.OTelCertificatesDir,
+				ReadOnly:  true,
+			},
+		)
+	}
+
 	if cfg.NeedsKubeAPIAccess {
 		volumeMounts = append(volumeMounts,
 			corev1.VolumeMount{
@@ -361,6 +380,36 @@ func createProjectedVolume(cluster *apiv1.Cluster) corev1.Volume {
 		Name: "projected",
 		VolumeSource: corev1.VolumeSource{
 			Projected: cluster.Spec.ProjectedVolumeTemplate.DeepCopy(),
+		},
+	}
+}
+
+// OTelTLSSecretName returns the name of the Secret holding the TLS material
+// the instance manager and PostgreSQL use to reach the OpenTelemetry
+// collector, or an empty string when the export needs no TLS material.
+//
+// The name is currently a single operator-wide setting, resolved in the
+// namespace of the Cluster. This is the one place to consult a per-Cluster
+// field, should the target ever become part of the Cluster specification.
+func OTelTLSSecretName(_ *apiv1.Cluster) string {
+	return configuration.Current.LogOTelTLSSecret
+}
+
+// createOTelCertificatesVolume mounts the TLS material reaching the
+// OpenTelemetry collector.
+//
+// The Secret is optional on purpose: the export is an observability feature,
+// and a namespace that does not carry the certificates has to keep running
+// PostgreSQL without them, rather than leaving the instances unschedulable.
+func createOTelCertificatesVolume(secretName string) corev1.Volume {
+	return corev1.Volume{
+		Name: otelCertificatesVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName:  secretName,
+				DefaultMode: ptr.To[int32](0o440),
+				Optional:    ptr.To(true),
+			},
 		},
 	}
 }

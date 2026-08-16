@@ -214,6 +214,30 @@ cnpg_metrics_exporter {{.Username}} cnpg_metrics_exporter
 	// CA certificate is stored
 	BarmanBackupEndpointCACertificateLocation = CertificatesDir + BarmanBackupEndpointCACertificateFileName
 
+	// OTelCertificatesDir is the location where the TLS material reaching the
+	// OpenTelemetry collector is mounted, when the operator is configured with
+	// a Secret holding it. The entry names are the ones of a cert-manager TLS
+	// Secret, so that no key has to be remapped when mounting it.
+	//
+	// It deliberately sits outside CertificatesDir, and outside every other
+	// directory the instance manager writes into: mounting a volume inside the
+	// scratch data volume makes the kubelet create the intermediate
+	// directories, owned by root, and the instance manager then cannot write
+	// its own certificates next to them.
+	OTelCertificatesDir = "/otel-certificates/"
+
+	// OTelCACertificateLocation is the location of the CA bundle verifying the
+	// certificate of the OpenTelemetry collector
+	OTelCACertificateLocation = OTelCertificatesDir + "ca.crt"
+
+	// OTelClientCertificateLocation is the location of the client certificate
+	// presented to the OpenTelemetry collector for mutual TLS
+	OTelClientCertificateLocation = OTelCertificatesDir + "tls.crt"
+
+	// OTelClientKeyLocation is the location of the client private key
+	// presented to the OpenTelemetry collector for mutual TLS
+	OTelClientKeyLocation = OTelCertificatesDir + "tls.key"
+
 	// BarmanBackupEndpointCACertificateFileName is the name of the file in which the barman endpoint
 	// CA certificate for backups is stored
 	BarmanBackupEndpointCACertificateFileName = "backup-" + BarmanEndpointCACertificateFileName
