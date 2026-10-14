@@ -57,6 +57,10 @@ type InstanceReconciler struct {
 	secretVersions  map[string]string
 	extensionStatus map[string]bool
 
+	// failoverQuorumBarrier is the barrier LSN recorded for the current
+	// synchronous replication configuration of this primary
+	failoverQuorumBarrier failoverQuorumBarrier
+
 	systemInitialization  *concurrency.Executed
 	firstReconcileDone    atomic.Bool
 	metricsServerExporter *metricserver.Exporter

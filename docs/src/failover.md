@@ -386,11 +386,46 @@ In the quorum failover, these values assume the following meaning:
   - are part of the cluster;
   - are able to report their state to the operator;
   - are potentially synchronous;
+  - have received WAL up to the synchronous replication barrier recorded by
+    the primary (see below).
 
 If `R + W > N`, then we can be sure that among the promotable replicas there is
 at least one that has confirmed all the synchronous commits, and we can safely
 promote it to primary. If this is not the case, the controller will not promote
 any replica to primary, and will wait for the situation to change.
+
+PostgreSQL does not make `COMMIT` wait for the standbys listed in
+`synchronous_standby_names` as soon as the setting changes from empty to
+non-empty: commits start waiting only once the checkpointer process has applied
+the new configuration. The checkpointer applies it right away when idle, and
+during the buffer writes of a spread checkpoint that is on schedule. Otherwise,
+for example during an immediate checkpoint or one that is behind schedule, it
+applies it only when the running checkpoint ends. During that time,
+`pg_stat_replication` already reports the standbys as synchronous, while
+commits are acknowledged without waiting for any of them. This can happen every
+time synchronous replication is enabled, for example when a replica becomes
+available again with `dataDurability: preferred` after no replica was.
+
+For this reason, the primary records a *barrier LSN* in the `FailoverQuorum`
+resource. Before recording it for the first time, the primary requests a
+`CHECKPOINT` and waits until a checkpoint that started after the request has
+completed and the checkpointer has either become idle or started another
+checkpoint, which guarantees that commits wait for the synchronous standbys.
+It then records its WAL flush position as the barrier, and moves the barrier
+to the current flush position whenever the synchronous replication
+configuration changes. Every commit acknowledged without waiting for a
+synchronous standby precedes the barrier, so a replica that received WAL up to
+the barrier contains all of them. Until the barrier is recorded, failover is
+not allowed.
+
+:::note
+    The primary requests an immediate checkpoint when synchronous replication
+    is enabled, that is when `synchronous_standby_names` changes from empty to
+    non-empty, and after it is promoted or its instance manager restarts. It
+    repeats the request every 5 minutes until the barrier is recorded. With
+    `dataDurability: preferred`, replicas that frequently all become
+    unavailable cause additional I/O on the primary.
+:::
 
 Users can force a promotion of a replica to primary through the
 `kubectl cnpg promote` command even if the quorum check is failing.

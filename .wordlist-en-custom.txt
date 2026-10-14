@@ -48,6 +48,7 @@ BackupStatus
 BackupTarget
 BarmanCredentials
 BarmanObjectStoreConfiguration
+BarrierLSN
 Bartolini
 Battiato
 BlaiseAntony
@@ -770,6 +771,7 @@ certificatesconfiguration
 certificatesstatus
 cgroup
 cheatsheet
+checkpointer
 checksums
 chmod
 ciclops

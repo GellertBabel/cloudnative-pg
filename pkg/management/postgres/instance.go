@@ -44,6 +44,7 @@ import (
 	"github.com/cloudnative-pg/machinery/pkg/fileutils"
 	"github.com/cloudnative-pg/machinery/pkg/fileutils/compatibility"
 	"github.com/cloudnative-pg/machinery/pkg/log"
+	"github.com/cloudnative-pg/machinery/pkg/types"
 	"github.com/jackc/pgx/v5/pgconn"
 	"go.uber.org/atomic"
 	"k8s.io/apimachinery/pkg/util/uuid"
@@ -1203,6 +1204,103 @@ func (instance *Instance) GetSynchronousReplicationMetadata(
 	}
 
 	return &result, nil
+}
+
+// RequestSynchronousReplicationCheckpoint requests an immediate checkpoint and
+// waits for it until ctx is done. It returns the WAL insert position read
+// before the request: a checkpoint whose redo position is not lower started
+// after the request.
+//
+// PostgreSQL enforces synchronous_standby_names on commits only after the
+// checkpointer applied the configuration reload, which it may defer until the
+// end of a running checkpoint. The request persists when the wait is
+// cancelled, so the caller can follow its completion with
+// GetLatestCheckpointRedoLSN.
+func (instance *Instance) RequestSynchronousReplicationCheckpoint(ctx context.Context) (types.LSN, error) {
+	db, err := instance.GetSuperUserDB()
+	if err != nil {
+		return "", err
+	}
+
+	return requestSynchronousReplicationCheckpoint(ctx, db)
+}
+
+func requestSynchronousReplicationCheckpoint(ctx context.Context, db *sql.DB) (types.LSN, error) {
+	var requestLSN types.LSN
+	row := db.QueryRowContext(ctx, "SELECT pg_catalog.pg_current_wal_insert_lsn()")
+	if err := row.Scan(&requestLSN); err != nil {
+		return "", fmt.Errorf("while reading the WAL insert position: %w", err)
+	}
+
+	if _, err := db.ExecContext(ctx, "CHECKPOINT"); err != nil {
+		return requestLSN, fmt.Errorf("while requesting a checkpoint: %w", err)
+	}
+
+	return requestLSN, nil
+}
+
+// GetLatestCheckpointRedoLSN returns the redo position of the latest completed
+// checkpoint, which is the WAL insert position at its start
+func (instance *Instance) GetLatestCheckpointRedoLSN(ctx context.Context) (types.LSN, error) {
+	db, err := instance.GetSuperUserDB()
+	if err != nil {
+		return "", err
+	}
+
+	return getLatestCheckpointRedoLSN(ctx, db)
+}
+
+func getLatestCheckpointRedoLSN(ctx context.Context, db *sql.DB) (types.LSN, error) {
+	var lsn types.LSN
+	row := db.QueryRowContext(ctx, "SELECT redo_lsn FROM pg_catalog.pg_control_checkpoint()")
+	if err := row.Scan(&lsn); err != nil {
+		return "", fmt.Errorf("while reading the latest checkpoint: %w", err)
+	}
+
+	return lsn, nil
+}
+
+// IsCheckpointerIdle checks whether the checkpointer is waiting for work. It
+// applies pending configuration reloads before that.
+func (instance *Instance) IsCheckpointerIdle(ctx context.Context) (bool, error) {
+	db, err := instance.GetSuperUserDB()
+	if err != nil {
+		return false, err
+	}
+
+	return isCheckpointerIdle(ctx, db)
+}
+
+func isCheckpointerIdle(ctx context.Context, db *sql.DB) (bool, error) {
+	var idle bool
+	row := db.QueryRowContext(ctx,
+		"SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_stat_activity "+
+			"WHERE backend_type = 'checkpointer' AND wait_event = 'CheckpointerMain')")
+	if err := row.Scan(&idle); err != nil {
+		return false, fmt.Errorf("while reading the checkpointer state: %w", err)
+	}
+
+	return idle, nil
+}
+
+// GetCurrentWALFlushLSN returns the current WAL flush position
+func (instance *Instance) GetCurrentWALFlushLSN(ctx context.Context) (types.LSN, error) {
+	db, err := instance.GetSuperUserDB()
+	if err != nil {
+		return "", err
+	}
+
+	return getCurrentWALFlushLSN(ctx, db)
+}
+
+func getCurrentWALFlushLSN(ctx context.Context, db *sql.DB) (types.LSN, error) {
+	var lsn types.LSN
+	row := db.QueryRowContext(ctx, "SELECT pg_catalog.pg_current_wal_flush_lsn()")
+	if err := row.Scan(&lsn); err != nil {
+		return "", fmt.Errorf("while reading the WAL flush position: %w", err)
+	}
+
+	return lsn, nil
 }
 
 // waitForStreamingConnectionAvailable waits until we can connect to the passed

@@ -1303,6 +1303,7 @@ _Appears in:_
 | `standbyNames` _string array_ | StandbyNames is the list of potentially synchronous<br />instance names. |  |  |  |
 | `standbyNumber` _integer_ | StandbyNumber is the number of synchronous standbys that transactions<br />need to wait for replies from. |  |  |  |
 | `primary` _string_ | Primary is the name of the primary instance that updated<br />this object the latest time. |  |  |  |
+| `barrierLSN` _string_ | BarrierLSN is the WAL position of the primary after which commits are<br />known to wait for the synchronous standbys. A standby is promotable<br />only after receiving WAL up to this position. |  |  |  |
 
 
 
