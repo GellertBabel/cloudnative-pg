@@ -20,6 +20,7 @@ SPDX-License-Identifier: Apache-2.0
 package controller
 
 import (
+	"github.com/cloudnative-pg/machinery/pkg/types"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -74,6 +75,7 @@ var _ = Describe("quorum promotion control", func() {
 					"postgres-2",
 					"postgres-3",
 				},
+				BarrierLSN: "0/3000000",
 			},
 		}
 
@@ -85,8 +87,9 @@ var _ = Describe("quorum promotion control", func() {
 							Name: "postgres-3",
 						},
 					},
-					Error:      nil,
-					IsPodReady: true,
+					Error:       nil,
+					IsPodReady:  true,
+					ReceivedLsn: "0/3000000",
 				},
 			},
 		}
@@ -106,6 +109,7 @@ var _ = Describe("quorum promotion control", func() {
 					"postgres-2",
 					"postgres-3",
 				},
+				BarrierLSN: "0/3000000",
 			},
 		}
 
@@ -117,8 +121,9 @@ var _ = Describe("quorum promotion control", func() {
 							Name: "postgres-2",
 						},
 					},
-					Error:      nil,
-					IsPodReady: true,
+					Error:       nil,
+					IsPodReady:  true,
+					ReceivedLsn: "0/3000000",
 				},
 				{
 					Pod: &corev1.Pod{
@@ -126,16 +131,129 @@ var _ = Describe("quorum promotion control", func() {
 							Name: "postgres-3",
 						},
 					},
-					Error:      nil,
-					IsPodReady: true,
+					Error:       nil,
+					IsPodReady:  true,
+					ReceivedLsn: "0/3000100",
 				},
 			},
 		}
 
-		It("denies a failover", func(ctx SpecContext) {
+		It("allows a failover", func(ctx SpecContext) {
 			status, err := r.evaluateQuorumCheckWithStatus(ctx, sync, statusList)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(status).To(BeTrue())
+		})
+	})
+
+	When("the synchronous replication barrier is missing", func() {
+		statusList := postgres.PostgresqlStatusList{
+			Items: []postgres.PostgresqlStatus{
+				{
+					Pod: &corev1.Pod{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "postgres-2",
+						},
+					},
+					Error:       nil,
+					IsPodReady:  true,
+					ReceivedLsn: "0/3000000",
+				},
+			},
+		}
+
+		DescribeTable("denies a failover",
+			func(ctx SpecContext, barrierLSN string) {
+				sync := &apiv1.FailoverQuorum{
+					Status: apiv1.FailoverQuorumStatus{
+						StandbyNumber: 1,
+						StandbyNames:  []string{"postgres-2"},
+						BarrierLSN:    barrierLSN,
+					},
+				}
+				status, err := r.evaluateQuorumCheckWithStatus(ctx, sync, statusList)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(status).To(BeFalse())
+			},
+			Entry("when the barrier is missing", ""),
+			Entry("when the barrier is not a valid LSN", "not-an-lsn"),
+		)
+	})
+
+	When("a standby has not received WAL up to the barrier", func() {
+		sync := &apiv1.FailoverQuorum{
+			Status: apiv1.FailoverQuorumStatus{
+				StandbyNumber: 1,
+				StandbyNames:  []string{"postgres-2"},
+				BarrierLSN:    "0/3000000",
+			},
+		}
+
+		DescribeTable("does not count it as promotable",
+			func(ctx SpecContext, receivedLsn types.LSN) {
+				statusList := postgres.PostgresqlStatusList{
+					Items: []postgres.PostgresqlStatus{
+						{
+							Pod: &corev1.Pod{
+								ObjectMeta: metav1.ObjectMeta{
+									Name: "postgres-2",
+								},
+							},
+							Error:       nil,
+							IsPodReady:  true,
+							ReceivedLsn: receivedLsn,
+						},
+					},
+				}
+				status, err := r.evaluateQuorumCheckWithStatus(ctx, sync, statusList)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(status).To(BeFalse())
+			},
+			Entry("when it is behind the barrier", types.LSN("0/2FFFFFF")),
+			Entry("when it reports no received LSN", types.LSN("")),
+		)
+	})
+
+	When("only part of the standbys reached the barrier", func() {
+		sync := &apiv1.FailoverQuorum{
+			Status: apiv1.FailoverQuorumStatus{
+				StandbyNumber: 1,
+				StandbyNames: []string{
+					"postgres-2",
+					"postgres-3",
+				},
+				BarrierLSN: "1/0",
+			},
+		}
+
+		statusList := postgres.PostgresqlStatusList{
+			Items: []postgres.PostgresqlStatus{
+				{
+					Pod: &corev1.Pod{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "postgres-2",
+						},
+					},
+					Error:       nil,
+					IsPodReady:  true,
+					ReceivedLsn: "1/10",
+				},
+				{
+					Pod: &corev1.Pod{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "postgres-3",
+						},
+					},
+					Error:       nil,
+					IsPodReady:  true,
+					ReceivedLsn: "0/FFFFFFFF",
+				},
+			},
+		}
+
+		It("denies a failover, because R + W = N", func(ctx SpecContext) {
+			status, err := r.evaluateQuorumCheckWithStatus(ctx, sync, statusList)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(status).To(BeFalse())
 		})
 	})
 })

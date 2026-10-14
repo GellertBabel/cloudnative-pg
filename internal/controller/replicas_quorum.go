@@ -24,6 +24,7 @@ import (
 
 	"github.com/cloudnative-pg/machinery/pkg/log"
 	"github.com/cloudnative-pg/machinery/pkg/stringset"
+	"github.com/cloudnative-pg/machinery/pkg/types"
 	apierrs "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -75,7 +76,8 @@ func (r *ClusterReconciler) evaluateQuorumCheckWithStatus(
 	// Step 1: coherence check of the synchrouous replication information
 	if syncStatus.StandbyNumber <= 0 {
 		contextLogger.Warning(
-			"Quorum check failed a unsupported synchronous nodes number")
+			"Quorum check failed because no synchronous standby is published. Synchronous replication " +
+				"may be disabled, or the primary has not confirmed yet that commits wait for the standbys")
 		return false, nil
 	}
 
@@ -85,12 +87,31 @@ func (r *ClusterReconciler) evaluateQuorumCheckWithStatus(
 		return false, nil
 	}
 
+	// Before the barrier is recorded, commits may not have waited for the
+	// synchronous standbys
+	barrier := types.LSN(syncStatus.BarrierLSN)
+	if _, err := barrier.Parse(); err != nil {
+		contextLogger.Warning(
+			"Quorum check failed because the synchronous replication barrier is missing",
+			"barrierLSN", syncStatus.BarrierLSN)
+		return false, nil
+	}
+
 	// Step 2: detect promotable replicas
 	candidateReplicas := stringset.New()
 	for _, record := range statusList.Items {
-		if record.Error == nil && record.IsPodReady {
-			candidateReplicas.Put(record.Pod.Name)
+		if record.Error != nil || !record.IsPodReady {
+			continue
 		}
+		if record.ReceivedLsn.Less(barrier) {
+			contextLogger.Info(
+				"Replica has not received WAL up to the synchronous replication barrier, not promotable",
+				"replica", record.Pod.Name,
+				"receivedLsn", record.ReceivedLsn,
+				"barrierLSN", barrier)
+			continue
+		}
+		candidateReplicas.Put(record.Pod.Name)
 	}
 
 	// Step 3: evaluate quorum check algorithm
@@ -124,6 +145,7 @@ func (r *ClusterReconciler) evaluateQuorumCheckWithStatus(
 		"writeSetCardinality", writeSetCardinality,
 		"nodeSet", nodeSet.ToSortedList(),
 		"nodeSetCardinality", nodeSetCardinality,
+		"barrierLSN", barrier,
 	)
 
 	if !isStronglyConsistent {

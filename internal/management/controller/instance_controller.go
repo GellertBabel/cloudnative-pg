@@ -216,6 +216,7 @@ func (r *InstanceReconciler) Reconcile(
 		return reconcile.Result{}, fmt.Errorf("while refreshing secrets: %w", err)
 	}
 
+	r.invalidateFailoverQuorumBarrier(ctx, cluster)
 	reloadConfigNeeded, err := r.refreshConfigurationFiles(ctx, cluster)
 	r.pendingReload = r.pendingReload || reloadConfigNeeded
 	if err != nil {
@@ -326,7 +327,8 @@ func (r *InstanceReconciler) Reconcile(
 		}
 	}
 
-	if err = r.updateFailoverQuorumObject(ctx, cluster); err != nil {
+	requeueForFailoverQuorum, err := r.updateFailoverQuorumObject(ctx, cluster)
+	if err != nil {
 		return reconcile.Result{}, err
 	}
 
@@ -383,6 +385,12 @@ func (r *InstanceReconciler) Reconcile(
 	// IMPORTANT: this needs a database connection to determine
 	// the PostgreSQL major version
 	r.reconcilePostgreSQLAutoConfFilePermissions(ctx, cluster)
+
+	// The synchronous replication barrier could not be recorded, retry soon
+	// as failovers are denied until it is
+	if requeueForFailoverQuorum {
+		return reconcile.Result{RequeueAfter: 5 * time.Second}, nil
+	}
 
 	// EXTREMELY IMPORTANT
 	//
@@ -1425,6 +1433,8 @@ func (r *InstanceReconciler) handlePromotion(ctx context.Context, cluster *apiv1
 		return fmt.Errorf("marking the promotion on the primary lease: %w", err)
 	}
 
+	// A barrier recorded during a previous term as primary is not valid anymore
+	r.failoverQuorumBarrier.forget()
 	// I must promote my instance here
 	r.promotionRequested = true
 

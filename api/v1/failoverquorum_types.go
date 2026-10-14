@@ -76,4 +76,10 @@ type FailoverQuorumStatus struct {
 	// this object the latest time.
 	// +optional
 	Primary string `json:"primary,omitempty"`
+
+	// BarrierLSN is the WAL position of the primary after which commits are
+	// known to wait for the synchronous standbys. A standby is promotable
+	// only after receiving WAL up to this position.
+	// +optional
+	BarrierLSN string `json:"barrierLSN,omitempty"`
 }
