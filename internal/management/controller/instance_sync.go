@@ -90,6 +90,7 @@ func (r *InstanceReconciler) updateFailoverQuorumObject(
 	for {
 		aligned := 0
 		if r.pendingFailoverQuorum != nil &&
+			r.pendingFailoverQuorum.lsn != "" &&
 			equality.Semantic.DeepEqual(r.pendingFailoverQuorum.desired, desired) {
 			aligned, err = r.instance.CountStandbysFlushedAtLeast(
 				ctx, desired.StandbyNames, r.pendingFailoverQuorum.lsn)
@@ -134,6 +135,10 @@ func (r *InstanceReconciler) updateFailoverQuorumObject(
 				published = apiv1.FailoverQuorumStatus{}
 			}
 
+			if waiting, err := r.waitingForCheckpoint(ctx, desired); err != nil || waiting {
+				return waiting, err
+			}
+
 			lsn, err := r.instance.GetCurrentWALInsertLSN(ctx)
 			if err != nil {
 				return false, err
@@ -146,6 +151,31 @@ func (r *InstanceReconciler) updateFailoverQuorumObject(
 			r.pendingFailoverQuorum = &pendingFailoverQuorum{desired: desired, lsn: lsn}
 		}
 	}
+}
+
+// waitingForCheckpoint is true while the checkpointer may not have applied the new configuration
+func (r *InstanceReconciler) waitingForCheckpoint(
+	ctx context.Context,
+	desired apiv1.FailoverQuorumStatus,
+) (bool, error) {
+	lastCheckpoint, inProgress, err := r.instance.GetCheckpointStatus(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	pending := pendingCheckpointWait(r.pendingFailoverQuorum, desired, lastCheckpoint, inProgress)
+	if pending == nil {
+		return false, nil
+	}
+
+	log.FromContext(ctx).Debug(
+		"Waiting for the running checkpoint to finish before capturing the failover quorum LSN",
+		"lastCheckpoint", pending.checkpoint,
+		"checkpointEnded", pending.checkpointEnded,
+		"desired", desired,
+	)
+	r.pendingFailoverQuorum = pending
+	return true, nil
 }
 
 // getDesiredFailoverQuorumStatus computes the FailoverQuorum status
@@ -229,6 +259,13 @@ type pendingFailoverQuorum struct {
 	// acknowledged under a previous configuration has its commit record
 	// before this position.
 	lsn string
+
+	// checkpoint is the location of the last completed checkpoint, set
+	// instead of lsn while waiting for the running checkpoint to finish
+	checkpoint string
+
+	// checkpointEnded is set once the awaited checkpoint has completed
+	checkpointEnded bool
 }
 
 // failoverQuorumAction is the decision taken by decideFailoverQuorumAction
@@ -240,9 +277,10 @@ const (
 	failoverQuorumActionNone failoverQuorumAction = iota
 
 	// failoverQuorumActionCapture means that a change has just been detected
-	// (or the desired status changed while waiting): the caller must reset
-	// the published status, record the current WAL insert LSN as the new
-	// pending state and evaluate the decision again.
+	// (or the desired status changed while waiting, or the LSN is not
+	// recorded yet): the caller must reset the published status, record the
+	// current WAL insert LSN as the new pending state and evaluate the
+	// decision again.
 	failoverQuorumActionCapture
 
 	// failoverQuorumActionWait means that not enough standbys reached the
@@ -284,7 +322,7 @@ func decideFailoverQuorumAction(
 		return failoverQuorumActionPublish
 	}
 
-	if pending == nil || !equality.Semantic.DeepEqual(pending.desired, desired) {
+	if pending == nil || pending.lsn == "" || !equality.Semantic.DeepEqual(pending.desired, desired) {
 		return failoverQuorumActionCapture
 	}
 
@@ -293,6 +331,39 @@ func decideFailoverQuorumAction(
 	}
 
 	return failoverQuorumActionWait
+}
+
+// pendingCheckpointWait returns the pending state to keep while the LSN
+// capture for `desired` must wait for the running checkpoint to finish,
+// and nil otherwise.
+//
+// Only the checkpoint running when the change was detected is waited for.
+// The checkpointer applies the new configuration after the post-checkpoint
+// cleanup, so once the last completed checkpoint differs from the recorded
+// one while the checkpointer is still busy, one more check is waited for.
+func pendingCheckpointWait(
+	pending *pendingFailoverQuorum,
+	desired apiv1.FailoverQuorumStatus,
+	lastCheckpoint string,
+	inProgress bool,
+) *pendingFailoverQuorum {
+	if !inProgress {
+		return nil
+	}
+
+	if pending == nil || !equality.Semantic.DeepEqual(pending.desired, desired) {
+		return &pendingFailoverQuorum{desired: desired, checkpoint: lastCheckpoint}
+	}
+
+	if pending.checkpointEnded {
+		return nil
+	}
+
+	if pending.checkpoint != lastCheckpoint {
+		return &pendingFailoverQuorum{desired: desired, checkpoint: pending.checkpoint, checkpointEnded: true}
+	}
+
+	return pending
 }
 
 func (r *InstanceReconciler) shouldManageFailoverQuorumObject(cluster *apiv1.Cluster) bool {

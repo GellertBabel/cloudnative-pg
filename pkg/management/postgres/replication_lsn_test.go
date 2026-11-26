@@ -64,6 +64,25 @@ var _ = Describe("replication LSN helpers", func() {
 		})
 	})
 
+	Describe("getCheckpointStatus", func() {
+		It("returns the last checkpoint and whether another one is running", func(ctx context.Context) {
+			mock.ExpectQuery("FROM pg_catalog.pg_control_checkpoint").
+				WillReturnRows(sqlmock.NewRows([]string{"checkpoint_lsn", "in_progress"}).AddRow("0/4000028", true))
+
+			lastCheckpoint, inProgress, err := getCheckpointStatus(ctx, db)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(lastCheckpoint).To(Equal("0/4000028"))
+			Expect(inProgress).To(BeTrue())
+		})
+
+		It("wraps the query errors", func(ctx context.Context) {
+			mock.ExpectQuery("FROM pg_catalog.pg_control_checkpoint").WillReturnError(errors.New("boom"))
+
+			_, _, err := getCheckpointStatus(ctx, db)
+			Expect(err).To(MatchError(ContainSubstring("boom")))
+		})
+	})
+
 	Describe("countStandbysFlushedAtLeast", func() {
 		It("does not query the database when there are no standbys", func(ctx context.Context) {
 			count, err := countStandbysFlushedAtLeast(ctx, db, nil, "0/5000060")

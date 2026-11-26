@@ -66,6 +66,9 @@ var _ = Describe("decideFailoverQuorumAction", func() {
 		Entry("captures again when the desired status changed while waiting",
 			newStatus, empty, &pendingFailoverQuorum{desired: oldStatus, lsn: "0/5000060"}, 2,
 			failoverQuorumActionCapture),
+		Entry("captures again while waiting for the running checkpoint",
+			newStatus, empty, &pendingFailoverQuorum{desired: newStatus, checkpoint: "0/4000028"}, 2,
+			failoverQuorumActionCapture),
 		Entry("waits when no standby is aligned",
 			newStatus, empty, &pendingFailoverQuorum{desired: newStatus, lsn: "0/5000060"}, 0,
 			failoverQuorumActionWait),
@@ -78,5 +81,40 @@ var _ = Describe("decideFailoverQuorumAction", func() {
 		Entry("publishes when more than the required standbys are aligned",
 			newStatus, empty, &pendingFailoverQuorum{desired: newStatus, lsn: "0/5000060"}, 3,
 			failoverQuorumActionPublish),
+	)
+})
+
+var _ = Describe("pendingCheckpointWait", func() {
+	oldStatus := apiv1.FailoverQuorumStatus{Method: "any", StandbyNumber: 1}
+	newStatus := apiv1.FailoverQuorumStatus{Method: "any", StandbyNumber: 2}
+
+	DescribeTable("decisions",
+		func(
+			pending *pendingFailoverQuorum,
+			lastCheckpoint string,
+			inProgress bool,
+			expected *pendingFailoverQuorum,
+		) {
+			Expect(pendingCheckpointWait(pending, newStatus, lastCheckpoint, inProgress)).To(Equal(expected))
+		},
+		Entry("does not wait when no checkpoint is running",
+			nil, "0/4000028", false, nil),
+		Entry("waits for the checkpoint running when the change is detected",
+			nil, "0/4000028", true,
+			&pendingFailoverQuorum{desired: newStatus, checkpoint: "0/4000028"}),
+		Entry("waits for the running checkpoint when the desired status changed while waiting",
+			&pendingFailoverQuorum{desired: oldStatus, checkpoint: "0/3000028"}, "0/4000028", true,
+			&pendingFailoverQuorum{desired: newStatus, checkpoint: "0/4000028"}),
+		Entry("keeps waiting while the same checkpoint is running",
+			&pendingFailoverQuorum{desired: newStatus, checkpoint: "0/4000028"}, "0/4000028", true,
+			&pendingFailoverQuorum{desired: newStatus, checkpoint: "0/4000028"}),
+		Entry("stops waiting when no checkpoint is running anymore",
+			&pendingFailoverQuorum{desired: newStatus, checkpoint: "0/4000028"}, "0/4000028", false, nil),
+		Entry("waits once more when the checkpoint completed and the checkpointer is still busy",
+			&pendingFailoverQuorum{desired: newStatus, checkpoint: "0/4000028"}, "0/6000028", true,
+			&pendingFailoverQuorum{desired: newStatus, checkpoint: "0/4000028", checkpointEnded: true}),
+		Entry("stops waiting when the checkpoint completed and another one is running",
+			&pendingFailoverQuorum{desired: newStatus, checkpoint: "0/4000028", checkpointEnded: true},
+			"0/6000028", true, nil),
 	)
 })

@@ -44,6 +44,17 @@ func (instance *Instance) GetCurrentWALInsertLSN(ctx context.Context) (string, e
 	return getCurrentWALInsertLSN(ctx, db)
 }
 
+// GetCheckpointStatus returns the location of the last completed checkpoint
+// and whether the checkpointer is running another one
+func (instance *Instance) GetCheckpointStatus(ctx context.Context) (string, bool, error) {
+	db, err := instance.GetSuperUserDB()
+	if err != nil {
+		return "", false, err
+	}
+
+	return getCheckpointStatus(ctx, db)
+}
+
 // CountStandbysFlushedAtLeast returns how many of the given standbys are
 // streaming from this primary and have durably flushed the WAL up to the
 // passed LSN (included).
@@ -70,6 +81,26 @@ func getCurrentWALInsertLSN(ctx context.Context, db *sql.DB) (string, error) {
 	}
 
 	return lsn, nil
+}
+
+func getCheckpointStatus(ctx context.Context, db *sql.DB) (string, bool, error) {
+	var (
+		lastCheckpoint string
+		inProgress     bool
+	)
+	// The checkpointer is idle only while waiting in its main loop
+	if err := db.QueryRowContext(
+		ctx,
+		`SELECT checkpoint_lsn::text,
+			EXISTS (SELECT 1 FROM pg_catalog.pg_stat_activity
+				WHERE backend_type = 'checkpointer'
+				  AND wait_event IS DISTINCT FROM 'CheckpointerMain')
+		FROM pg_catalog.pg_control_checkpoint()`,
+	).Scan(&lastCheckpoint, &inProgress); err != nil {
+		return "", false, fmt.Errorf("while reading the checkpoint status: %w", err)
+	}
+
+	return lastCheckpoint, inProgress, nil
 }
 
 func countStandbysFlushedAtLeast(
